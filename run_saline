@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ----------------------------
+# Usage
+# ----------------------------
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <nifti_file> <num_elec (1 or 2)>"
+    exit 1
+fi
+
+nifti_file="$1"
+num_elec="$2"
+
+# ----------------------------
+# Validate inputs
+# ----------------------------
+if [[ ! -f "$nifti_file" ]]; then
+    echo "Error: file not found: $nifti_file"
+    exit 1
+fi
+
+if [[ "$num_elec" != "1" && "$num_elec" != "2" ]]; then
+    echo "Error: num_elec must be 1 or 2"
+    exit 1
+fi
+
+base="${nifti_file%.nii*}"
+
+# ----------------------------
+# Get original size
+# ----------------------------
+orig_size=$(python3 utils/get_size.py --input "$nifti_file")
+echo "Original size: $orig_size"
+
+# ----------------------------
+# Preprocessing
+# ----------------------------
+echo "Resampling to 1mm isotropic..."
+ResampleImage 3 "$nifti_file" "${base}_1mm_iso.nii.gz" 1.0x1.0x1.0 0 3['l']
+
+echo "Running SynthStrip..."
+mri_synthstrip \
+    -i "${base}_1mm_iso.nii.gz" \
+    -m "${base}_1mm_iso_brain_mask.nii.gz" \
+    -o "${base}_1mm_iso_skull_striped.nii.gz"
+
+echo "N4 bias correction..."
+N4BiasFieldCorrection -d 3 \
+    -x "${base}_1mm_iso_brain_mask.nii.gz" \
+    -i "${base}_1mm_iso_skull_striped.nii.gz" \
+    -o "${base}_1mm_iso_skull_striped_n4.nii.gz"
+
+echo "Running SynthSeg..."
+mri_synthseg \
+    --i "${base}_1mm_iso_skull_striped_n4.nii.gz" \
+    --o "${base}_1mm_iso_skull_striped_n4_seg.nii.gz" \
+    --threads 5
+
+# ----------------------------
+# Run SALINE
+# ----------------------------
+if [[ "$num_elec" -eq 2 ]]; then
+    echo "Running SALINE (dual electrode)..."
+    python3 SALINE/elec_seg.py \
+        --input "${base}_1mm_iso_skull_striped_n4.nii.gz" \
+        --br_mask "${base}_1mm_iso_brain_mask.nii.gz" \
+        --synthseg "${base}_1mm_iso_skull_striped_n4_seg.nii.gz"
+else
+    echo "Running SALINE (single electrode)..."
+    python3 SALINE/elec_seg_single.py \
+        --input "${base}_1mm_iso_skull_striped_n4.nii.gz" \
+        --br_mask "${base}_1mm_iso_brain_mask.nii.gz" \
+        --synthseg "${base}_1mm_iso_skull_striped_n4_seg.nii.gz"
+fi
+
+# ----------------------------
+# Cleanup
+# ----------------------------
+echo "Cleaning intermediate files..."
+rm -f \
+    "${base}_1mm_iso_skull_striped.nii.gz" \
+    "${base}_1mm_iso_brain_mask.nii.gz" \
+    "${base}_1mm_iso_skull_striped_n4.nii.gz" \
+    "${base}_1mm_iso_skull_striped_n4_seg.nii.gz"
+
+# ----------------------------
+# Resample back to native size
+# ----------------------------
+echo "Resampling result back to native space..."
+ResampleImage 3 \
+    "${base}_1mm_iso_saline_elec.nii.gz" \
+    "${base}_saline_elec.nii.gz" \
+    "$orig_size" 1 1
+
+echo "Done."

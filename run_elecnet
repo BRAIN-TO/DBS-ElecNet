@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ============================
+# Usage
+# ============================
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <nifti_file> <device>"
+    echo "Examples:"
+    echo "  $0 subject.nii.gz cuda:0"
+    echo "  $0 subject.nii.gz cpu"
+    exit 1
+fi
+
+nifti_file="$1"
+device="$2"
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ckpt_path="${script_dir}/ckpt/unet_epoch_200.pth"
+
+# ============================
+# Validate inputs
+# ============================
+if [[ ! -f "$nifti_file" ]]; then
+    echo "Error: file not found: $nifti_file"
+    exit 1
+fi
+
+base="${nifti_file%.nii*}"
+
+# ============================
+# Get original size
+# ============================
+orig_size=$(python3 utils/get_size.py --input "$nifti_file")
+echo "Original size: $orig_size"
+
+# ============================
+# Preprocessing
+# ============================
+echo "Resampling to 1mm isotropic..."
+ResampleImage 3 "$nifti_file" "${base}_1mm_iso.nii.gz" 1.0x1.0x1.0 0 3['l']
+
+echo "Running SynthStrip..."
+mri_synthstrip \
+    -i "${base}_1mm_iso.nii.gz" \
+    -m "${base}_1mm_iso_brain_mask.nii.gz" \
+    -o "${base}_1mm_iso_skull_striped.nii.gz"
+
+echo "N4 bias correction..."
+N4BiasFieldCorrection -d 3 \
+    -x "${base}_1mm_iso_brain_mask.nii.gz" \
+    -i "${base}_1mm_iso_skull_striped.nii.gz" \
+    -o "${base}_1mm_iso_skull_striped_n4.nii.gz"
+
+# ============================
+# Run ElecNet
+# ============================
+echo "Running ElecNet on device: $device"
+python3 ElecNet/inference.py \
+    --input "${base}_1mm_iso_skull_striped_n4.nii.gz" \
+    --ckpt_path "$ckpt_path" \
+    --device "$device"
+
+# ============================
+# Cleanup
+# ============================
+echo "Cleaning intermediate files..."
+rm -f \
+    "${base}_1mm_iso_skull_striped.nii.gz" \
+    "${base}_1mm_iso_brain_mask.nii.gz" \
+    "${base}_1mm_iso_skull_striped_n4.nii.gz"
+
+# ============================
+# Resample back to native
+# ============================
+echo "Resampling result back to native space..."
+ResampleImage 3 \
+    "${base}_1mm_iso_elec.nii.gz" \
+    "${base}_elec.nii.gz" \
+    "$orig_size" 1 1
+
+echo "Done."
