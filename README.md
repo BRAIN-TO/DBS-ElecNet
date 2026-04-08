@@ -4,6 +4,8 @@ Vanessa H. Yu, Edward Chen, Jürgen Germann, Alexandre Boutet, Andres M. Lozano,
 
 *Accepted at the 2026 IEEE 23rd International Symposium on Biomedical Imaging (ISBI), London, UK*
 
+Poster available at: [https://zenodo.org/records/19430997](https://zenodo.org/records/19430997)
+
 ## Table of Contents
 <!-- 1. [Data Preprocessing](#data-preprocessing) -->
 1. [Requirements](#requirements)
